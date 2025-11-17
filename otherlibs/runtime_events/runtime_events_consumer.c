@@ -43,6 +43,9 @@
 #include <sys/mman.h>
 #endif
 
+#if defined(__linux__) && (defined(__x86_64__) || defined(__i386__))
+#define PERF_COUNTERS
+#endif
 
 #if defined(HAS_UNISTD)
 #include <unistd.h>
@@ -64,9 +67,11 @@ struct caml_runtime_events_cursor {
 #endif
   /* callbacks */
   int (*runtime_begin)(int domain_id, void *callback_data, uint64_t timestamp,
-                        ev_runtime_phase phase);
+                        ev_runtime_phase phase, uint64_t header,
+                        uint64_t *buf, int buf_len);
   int (*runtime_end)(int domain_id, void *callback_data, uint64_t timestamp,
-                      ev_runtime_phase phase);
+                      ev_runtime_phase phase, uint64_t header,
+                      uint64_t *buf, int buf_len);
   int (*runtime_counter)(int domain_id, void *callback_data,
                           uint64_t timestamp, ev_runtime_counter counter,
                           uint64_t val);
@@ -313,7 +318,10 @@ void caml_runtime_events_set_runtime_begin(
                                       int (*f)(int domain_id,
                                                void *callback_data,
                                                uint64_t timestamp,
-                                               ev_runtime_phase phase)) {
+                                               ev_runtime_phase phase,
+                                               uint64_t header,
+                                               uint64_t *buf,
+                                               int buf_len)) {
   cursor->runtime_begin = f;
 }
 
@@ -321,7 +329,10 @@ void caml_runtime_events_set_runtime_end(
                                     struct caml_runtime_events_cursor *cursor,
                                     int (*f)(int domain_id, void *callback_data,
                                              uint64_t timestamp,
-                                             ev_runtime_phase phase)) {
+                                             ev_runtime_phase phase,
+                                             uint64_t header,
+                                             uint64_t *buf,
+                                             int buf_len)) {
   cursor->runtime_end = f;
 }
 
@@ -550,7 +561,8 @@ caml_runtime_events_read_poll(struct caml_runtime_events_cursor *cursor,
         case EV_BEGIN:
           if (cursor->runtime_begin) {
             if( !cursor->runtime_begin(domain_num, callback_data, buf[1],
-                                        RUNTIME_EVENTS_ITEM_ID(header)) ) {
+                                        RUNTIME_EVENTS_ITEM_ID(header),
+                                        header, buf, msg_length) ) {
                                           early_exit = 1;
                                           continue;
                                         }
@@ -559,7 +571,8 @@ caml_runtime_events_read_poll(struct caml_runtime_events_cursor *cursor,
         case EV_EXIT:
           if (cursor->runtime_end) {
             if( !cursor->runtime_end(domain_num, callback_data, buf[1],
-                                      RUNTIME_EVENTS_ITEM_ID(header)) ) {
+                                      RUNTIME_EVENTS_ITEM_ID(header),
+                                      header, buf, msg_length) ) {
                                         early_exit = 1;
                                         continue;
                                       };
@@ -724,20 +737,57 @@ struct callbacks_exception_holder {
 };
 
 static int ml_runtime_begin(int domain_id, void *callback_data,
-                             uint64_t timestamp, ev_runtime_phase phase) {
+                             uint64_t timestamp, ev_runtime_phase phase,
+                             uint64_t header, uint64_t *buf, int buf_len) {
   CAMLparam0();
-  CAMLlocal5(tmp_callback, ts_val, msg_type, callbacks_root, res);
+  CAMLlocal4(tmp_callback, callbacks_root, res, perf_configs);
+  CAMLlocal1(perf_counters);
+  CAMLlocalN(params, 5);
+
+  /* Initialize local variables to prevent GC issues */
+  perf_configs = Val_unit;
+  perf_counters = Val_unit;
+
   struct callbacks_exception_holder* holder = callback_data;
 
   callbacks_root = *holder->callbacks_val;
 
   tmp_callback = Field(callbacks_root, 0); /* ev_runtime_begin */
   if (Is_some(tmp_callback)) {
-    ts_val = caml_copy_int64(timestamp);
-    msg_type = Val_long(phase);
+    /* Initialize perf arrays first, before any allocations that might trigger GC */
+    #ifdef PERF_COUNTERS
+    int nperf = RUNTIME_EVENTS_ITEM_PERF_COUNTERS(header);
 
-    res = caml_callback3_exn(Some_val(tmp_callback), Val_long(domain_id),
-                                  ts_val, msg_type);
+    /* Calculate start index based on total length minus perf data size.
+       Perf counters are always appended to the tail of the message:
+       [Header] [Timestamp] [Payload...] [PerfConfigs...] [PerfValues...] */
+    int perf_start_index = buf_len - (2 * nperf);
+
+    if (nperf > 0 && perf_start_index >= 2) {
+      perf_configs = caml_alloc(nperf, 0);
+      perf_counters = caml_alloc(nperf, 0);
+
+      for (int i = 0; i < nperf; i++) {
+        Store_field(perf_configs, i, caml_copy_int64(buf[perf_start_index + i]));
+        Store_field(perf_counters, i,
+                    caml_copy_int64(buf[perf_start_index + nperf + i]));
+      }
+    } else {
+      perf_configs = caml_alloc(0, 0);
+      perf_counters = caml_alloc(0, 0);
+    }
+    #else
+    perf_configs = caml_alloc(0, 0);
+    perf_counters = caml_alloc(0, 0);
+    #endif
+
+    params[0] = Val_long(domain_id);
+    params[1] = caml_copy_int64(timestamp);
+    params[2] = Val_long(phase);
+    params[3] = perf_configs;
+    params[4] = perf_counters;
+
+    res = caml_callbackN_exn(Some_val(tmp_callback), 5, params);
 
     if( Is_exception_result(res) ) {
       res = Extract_exception(res);
@@ -750,20 +800,57 @@ static int ml_runtime_begin(int domain_id, void *callback_data,
 }
 
 static int ml_runtime_end(int domain_id, void *callback_data,
-                           uint64_t timestamp, ev_runtime_phase phase) {
+                           uint64_t timestamp, ev_runtime_phase phase,
+                           uint64_t header, uint64_t *buf, int buf_len) {
   CAMLparam0();
-  CAMLlocal5(tmp_callback, ts_val, msg_type, callbacks_root, res);
+  CAMLlocal4(tmp_callback, callbacks_root, res, perf_configs);
+  CAMLlocal1(perf_counters);
+  CAMLlocalN(params, 5);
+
+  /* Initialize local variables to prevent GC issues */
+  perf_configs = Val_unit;
+  perf_counters = Val_unit;
+
   struct callbacks_exception_holder* holder = callback_data;
 
   callbacks_root = *holder->callbacks_val;
 
   tmp_callback = Field(callbacks_root, 1); /* ev_runtime_end */
   if (Is_some(tmp_callback)) {
-    ts_val = caml_copy_int64(timestamp);
-    msg_type = Val_long(phase);
+    /* Initialize perf arrays first, before any allocations that might trigger GC */
+    #ifdef PERF_COUNTERS
+    int nperf = RUNTIME_EVENTS_ITEM_PERF_COUNTERS(header);
 
-    res = caml_callback3_exn(Some_val(tmp_callback), Val_long(domain_id),
-                             ts_val, msg_type);
+    /* Calculate start index based on total length minus perf data size.
+       Perf counters are always appended to the tail of the message:
+       [Header] [Timestamp] [Payload...] [PerfConfigs...] [PerfValues...] */
+    int perf_start_index = buf_len - (2 * nperf);
+
+    if (nperf > 0 && perf_start_index >= 2) {
+      perf_configs = caml_alloc(nperf, 0);
+      perf_counters = caml_alloc(nperf, 0);
+
+      for (int i = 0; i < nperf; i++) {
+        Store_field(perf_configs, i, caml_copy_int64(buf[perf_start_index + i]));
+        Store_field(perf_counters, i,
+                    caml_copy_int64(buf[perf_start_index + nperf + i]));
+      }
+    } else {
+      perf_configs = caml_alloc(0, 0);
+      perf_counters = caml_alloc(0, 0);
+    }
+    #else
+    perf_configs = caml_alloc(0, 0);
+    perf_counters = caml_alloc(0, 0);
+    #endif
+
+    params[0] = Val_long(domain_id);
+    params[1] = caml_copy_int64(timestamp);
+    params[2] = Val_long(phase);
+    params[3] = perf_configs;
+    params[4] = perf_counters;
+
+    res = caml_callbackN_exn(Some_val(tmp_callback), 5, params);
 
     if( Is_exception_result(res) ) {
       res = Extract_exception(res);

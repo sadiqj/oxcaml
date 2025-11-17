@@ -346,8 +346,10 @@ module Callbacks = struct
   (* these record callbacks are only called from C code in the runtime
       so we suppress the unused field warning *)
   type[@warning "-unused-field"] t = {
-    runtime_begin: (int -> Timestamp.t -> runtime_phase -> unit) option;
-    runtime_end: (int -> Timestamp.t -> runtime_phase -> unit) option;
+    runtime_begin: (int -> Timestamp.t -> runtime_phase ->
+                    int64 array -> int64 array -> unit) option;
+    runtime_end: (int -> Timestamp.t -> runtime_phase ->
+                  int64 array -> int64 array -> unit) option;
     runtime_counter: (int -> Timestamp.t -> runtime_counter
                       -> int -> unit) option;
     alloc: (int -> Timestamp.t -> int array -> unit) option;

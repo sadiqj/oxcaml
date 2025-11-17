@@ -258,10 +258,10 @@ module Callbacks : sig
   type t
   (** Type of callbacks. *)
 
-  val create : ?runtime_begin:(int -> Timestamp.t -> runtime_phase
-                                -> unit) ->
-             ?runtime_end:(int -> Timestamp.t -> runtime_phase
-                                -> unit) ->
+  val create : ?runtime_begin:(int -> Timestamp.t -> runtime_phase ->
+                                int64 array -> int64 array -> unit) ->
+             ?runtime_end:(int -> Timestamp.t -> runtime_phase ->
+                            int64 array -> int64 array -> unit) ->
              ?runtime_counter:(int -> Timestamp.t -> runtime_counter
                                 -> int -> unit) ->
              ?alloc:(int -> Timestamp.t -> int array -> unit) ->
@@ -274,13 +274,19 @@ module Callbacks : sig
       existence. After a domain terminates, a newly spawned domain may take
       ownership of the ring buffer. A [runtime_begin] callback is called when
       the runtime enters a new phase (e.g a runtime_begin with EV_MINOR is
-      called at the start of a minor GC). A [runtime_end] callback is called
-      when the runtime leaves a certain phase. The [runtime_counter] callback
-      is called when a counter is emitted by the runtime. [lifecycle] callbacks
-      are called when the ring undergoes a change in lifecycle and a consumer
-      may need to respond. [alloc] callbacks are currently only called on the
-      instrumented runtime. [lost_events] callbacks are called if the consumer
-      code detects some unconsumed events have been overwritten.
+      called at the start of a minor GC). The [runtime_begin] callback receives
+      two additional int64 arrays: the first contains performance counter
+      configuration IDs, and the second contains the corresponding counter
+      values. Both arrays have the same length and will be empty if no
+      performance counters are available. A [runtime_end] callback is called
+      when the runtime leaves a certain phase and receives the same two int64
+      arrays as [runtime_begin] (performance counter configuration IDs and
+      counter values). The [runtime_counter] callback is called when a counter
+      is emitted by the runtime. [lifecycle] callbacks are called when the ring
+      undergoes a change in lifecycle and a consumer may need to respond.
+      [alloc] callbacks are currently only called on the instrumented runtime.
+      [lost_events] callbacks are called if the consumer code detects some
+      unconsumed events have been overwritten.
       *)
 
   val add_user_event : 'a Type.t ->

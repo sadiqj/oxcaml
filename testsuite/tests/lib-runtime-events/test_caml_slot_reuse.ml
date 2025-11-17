@@ -21,7 +21,7 @@ let () =
       Domain.join (Domain.spawn (fun _ -> ()))
     done;
     let cursor = create_cursor None in
-    let runtime_begin domain_id ts phase =
+    let runtime_begin domain_id ts phase _perf_configs _perf_counters =
       match phase with
       | EV_MINOR ->
         got_minor := true

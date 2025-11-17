@@ -19,7 +19,7 @@ let got_major = ref false
 let got_minor = ref false
 let finished = ref false
 
-let runtime_end domain_id ts phase =
+let runtime_end domain_id ts phase _perf_configs _perf_counters =
   match phase with
   | Runtime_events.EV_EXPLICIT_GC_FULL_MAJOR ->
     got_major := true

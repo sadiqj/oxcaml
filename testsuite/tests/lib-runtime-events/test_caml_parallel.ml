@@ -48,7 +48,7 @@ let find_or_create_phase_count domain_id =
             end
         | Some(pc) -> pc
 
-let runtime_begin domain_id ts phase =
+let runtime_begin domain_id ts phase _perf_configs _perf_counters =
     let phase_count = find_or_create_phase_count domain_id in
     match phase with
     | EV_MAJOR ->
@@ -63,7 +63,7 @@ let runtime_begin domain_id ts phase =
         end
     | _ -> ()
 
-let runtime_end domain_id ts phase =
+let runtime_end domain_id ts phase _perf_configs _perf_counters =
     let phase_count = find_or_create_phase_count domain_id in
     match phase with
         | EV_MAJOR ->

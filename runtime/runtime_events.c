@@ -162,10 +162,44 @@ struct perf_counters {
 };
 
 static CAMLthread_local struct perf_counters* thread_counters = NULL;
-static char* cached_perf_config = NULL;
+static int num_perf_configs = 0;
+static uint64_t parsed_perf_configs[MAX_PERF_EVENTS];
 static atomic_bool perf_counters_globally_disabled = false;
 
 #define seqlock_barrier() asm volatile("" ::: "memory")
+
+static const char* parse_perf_config_string(const char* format)
+{
+  static char err[256];
+  int count = 0;
+  while (*format != '\0') {
+    if (format[0] != 'r') {
+      snprintf(err, sizeof err,
+               "events '%s': cannot parse (only 'rNNN' events supported)",
+               format);
+      return err;
+    }
+    format++;
+    char* endptr;
+    unsigned long config = strtoul(format, &endptr, 16);
+    if (*endptr == ',') format = endptr + 1;
+    else if (*endptr == '\0') format = endptr;
+    else {
+      snprintf(err, sizeof err,
+               "events '%s': cannot parse (only 'rNNN' events supported)",
+               format);
+      return err;
+    }
+    if (count >= MAX_PERF_EVENTS) {
+      snprintf(err, sizeof err, "events: too many events (max %d)",
+               MAX_PERF_EVENTS);
+      return err;
+    }
+    parsed_perf_configs[count++] = config;
+  }
+  num_perf_configs = count;
+  return NULL;
+}
 
 static void perf_events_teardown(struct perf_counters* counters)
 {
@@ -209,27 +243,17 @@ static int perf_events_setup_rdpmc(struct perf_counters* counters)
   return 0;
 }
 
-static const char* perf_events_setup(const char* format, struct perf_counters* counters)
+static const char* perf_events_setup(struct perf_counters* counters)
 {
-  char err[256] = {0};
+  static char err[256];
+  err[0] = 0;
   memset(counters, 0, sizeof(*counters));
   int leader_fd = -1;
-  while (*format != '\0') {
-    if (format[0] != 'r') {
-      snprintf(err, sizeof err, "events '%s': cannot parse (only 'rNNN' events supported)", format);
-      break;
-    }
-    format++;
-    char* endptr;
-    unsigned long config = strtoul(format, &endptr, 16);
-    if (*endptr == ',') format = endptr + 1;
-    else if (*endptr == '\0') format = endptr;
-    else {
-      snprintf(err, sizeof err, "events '%s': cannot parse (only 'rNNN' events supported)", format);
-      break;
-    }
 
-    int i = counters->ncounters++;
+  for (int i = 0; i < num_perf_configs; i++) {
+    uint64_t config = parsed_perf_configs[i];
+    counters->ncounters++;
+
     struct perf_event_attr attr = {
       .size = sizeof(struct perf_event_attr),
       .type = PERF_TYPE_RAW,
@@ -244,7 +268,8 @@ static const char* perf_events_setup(const char* format, struct perf_counters* c
               leader_fd,
               PERF_FLAG_FD_CLOEXEC);
     if (fd < 0) {
-      snprintf(err, sizeof err, "event %d (r%lx): perf_event_open: %s", i, config, strerror(errno));
+      snprintf(err, sizeof err, "event %d (r%llx): perf_event_open: %s",
+               i, (unsigned long long)config, strerror(errno));
       break;
     }
     struct perf_event_mmap_page* page;
@@ -252,7 +277,8 @@ static const char* perf_events_setup(const char* format, struct perf_counters* c
       mmap(NULL, sysconf(_SC_PAGESIZE), PROT_READ, MAP_SHARED, fd, 0);
     if (page == NULL) {
       close(fd);
-      snprintf(err, sizeof err, "event %d (r%lx): mmap: %s", i, config, strerror(errno));
+      snprintf(err, sizeof err, "event %d (r%llx): mmap: %s",
+               i, (unsigned long long)config, strerror(errno));
       break;
     }
 
@@ -267,7 +293,9 @@ static const char* perf_events_setup(const char* format, struct perf_counters* c
     } while (page->lock != seq);
 
     if (!rdpmc_ok) {
-      snprintf(err, sizeof err, "event %d (r%lx): rdpmc reads unavailable (too many counters?)", i, config);
+      snprintf(err, sizeof err,
+               "event %d (r%llx): rdpmc reads unavailable (too many counters?)",
+               i, (unsigned long long)config);
       close(fd);
       break;
     }
@@ -289,7 +317,7 @@ static const char* perf_events_setup(const char* format, struct perf_counters* c
   }
   if (err[0]) {
     perf_events_teardown(counters);
-    return strdup(err);
+    return err;
   } else {
     return NULL;
   }
@@ -320,10 +348,10 @@ static struct perf_counters* get_thread_counters(void)
   if (atomic_load(&perf_counters_globally_disabled))
     return NULL;
 
-  if (thread_counters == NULL && cached_perf_config != NULL) {
+  if (thread_counters == NULL && num_perf_configs > 0) {
     thread_counters = caml_stat_alloc(sizeof(struct perf_counters));
     memset(thread_counters, 0, sizeof(struct perf_counters));
-    const char* err = perf_events_setup(cached_perf_config, thread_counters);
+    const char* err = perf_events_setup(thread_counters);
     if (err) {
       caml_gc_log("perf_events setup failed, disabling globally: %s", err);
       atomic_store(&perf_counters_globally_disabled, true);
@@ -429,10 +457,7 @@ static void runtime_events_teardown_from_stw_single(int remove_file) {
 #ifdef PERF_COUNTERS
     /* Clean up current thread's counters (if any) */
     cleanup_thread_counters();
-    if (cached_perf_config != NULL) {
-      caml_stat_free(cached_perf_config);
-      cached_perf_config = NULL;
-    }
+    num_perf_configs = 0;
     atomic_store(&perf_counters_globally_disabled, false);
 #endif
 
@@ -650,9 +675,16 @@ static void runtime_events_create_from_stw_single(void) {
     }
 
     #ifdef PERF_COUNTERS
-    const char* env = caml_secure_getenv(T("OCAML_RUNTIME_EVENTS_PERF_COUNTERS"));
-    if (env && cached_perf_config == NULL) {
-      cached_perf_config = caml_stat_strdup(env);
+    if (num_perf_configs == 0) {
+      const char* env =
+        caml_secure_getenv(T("OCAML_RUNTIME_EVENTS_PERF_COUNTERS"));
+      if (env) {
+        const char* err = parse_perf_config_string(env);
+        if (err) {
+          caml_gc_log("perf_events config parse failed, disabling: %s", err);
+          num_perf_configs = 0;
+        }
+      }
     }
     #endif
   }

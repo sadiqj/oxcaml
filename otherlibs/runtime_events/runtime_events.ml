@@ -209,6 +209,8 @@ let lifecycle_name lifecycle =
   | EV_DOMAIN_SPAWN -> "domain_spawn"
   | EV_DOMAIN_TERMINATE -> "domain_terminate"
 
+type perf_sample = #{ config: int64#; value: int64# }
+
 type cursor
 
 module Timestamp = struct
@@ -347,9 +349,9 @@ module Callbacks = struct
       so we suppress the unused field warning *)
   type[@warning "-unused-field"] t = {
     runtime_begin: (int -> Timestamp.t -> runtime_phase ->
-                    int64 array -> int64 array -> unit) option;
+                    perf_sample array -> unit) option;
     runtime_end: (int -> Timestamp.t -> runtime_phase ->
-                  int64 array -> int64 array -> unit) option;
+                  perf_sample array -> unit) option;
     runtime_counter: (int -> Timestamp.t -> runtime_counter
                       -> int -> unit) option;
     alloc: (int -> Timestamp.t -> int array -> unit) option;

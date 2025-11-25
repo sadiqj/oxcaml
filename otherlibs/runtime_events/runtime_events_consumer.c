@@ -51,6 +51,10 @@
 #include <unistd.h>
 #endif
 
+/* Extern declaration for unboxed product array allocation */
+CAMLextern value caml_makearray_dynamic_non_scannable_unboxed_product(
+  value v_num_components, value v_is_local, value v_non_unarized_length);
+
 #define RING_FILE_NAME_MAX_LEN 512
 
 struct caml_runtime_events_cursor {
@@ -740,13 +744,11 @@ static int ml_runtime_begin(int domain_id, void *callback_data,
                              uint64_t timestamp, ev_runtime_phase phase,
                              uint64_t header, uint64_t *buf, int buf_len) {
   CAMLparam0();
-  CAMLlocal4(tmp_callback, callbacks_root, res, perf_configs);
-  CAMLlocal1(perf_counters);
-  CAMLlocalN(params, 5);
+  CAMLlocal4(tmp_callback, callbacks_root, res, perf_data);
+  CAMLlocalN(params, 4);
 
   /* Initialize local variables to prevent GC issues */
-  perf_configs = Val_unit;
-  perf_counters = Val_unit;
+  perf_data = Val_unit;
 
   struct callbacks_exception_holder* holder = callback_data;
 
@@ -754,7 +756,8 @@ static int ml_runtime_begin(int domain_id, void *callback_data,
 
   tmp_callback = Field(callbacks_root, 0); /* ev_runtime_begin */
   if (Is_some(tmp_callback)) {
-    /* Initialize perf arrays first, before any allocations that might trigger GC */
+    /* Allocate unboxed perf_sample array: #{ config: int64#; value: int64# }
+       Uses local allocation when available, falls back to heap otherwise */
     #ifdef PERF_COUNTERS
     int nperf = RUNTIME_EVENTS_ITEM_PERF_COUNTERS(header);
 
@@ -764,30 +767,35 @@ static int ml_runtime_begin(int domain_id, void *callback_data,
     int perf_start_index = buf_len - (2 * nperf);
 
     if (nperf > 0 && perf_start_index >= 2) {
-      perf_configs = caml_alloc(nperf, 0);
-      perf_counters = caml_alloc(nperf, 0);
-
+      /* Allocate array of unboxed records (2 int64# components per element) */
+      perf_data = caml_makearray_dynamic_non_scannable_unboxed_product(
+          Val_long(2),      /* num_components (config + value) */
+          Val_true,         /* is_local (try local alloc, auto-fallback) */
+          Val_long(nperf)   /* array length */
+      );
+      /* Write int64 values directly to the unboxed array */
+      int64_t* data = (int64_t*)perf_data;
       for (int i = 0; i < nperf; i++) {
-        Store_field(perf_configs, i, caml_copy_int64(buf[perf_start_index + i]));
-        Store_field(perf_counters, i,
-                    caml_copy_int64(buf[perf_start_index + nperf + i]));
+        data[i*2] = buf[perf_start_index + i];           /* config */
+        data[i*2 + 1] = buf[perf_start_index + nperf + i]; /* value */
       }
     } else {
-      perf_configs = caml_alloc(0, 0);
-      perf_counters = caml_alloc(0, 0);
+      /* Empty array - allocate with length 0 */
+      perf_data = caml_makearray_dynamic_non_scannable_unboxed_product(
+          Val_long(2), Val_true, Val_long(0));
     }
     #else
-    perf_configs = caml_alloc(0, 0);
-    perf_counters = caml_alloc(0, 0);
+    /* No perf counters - allocate empty array */
+    perf_data = caml_makearray_dynamic_non_scannable_unboxed_product(
+        Val_long(2), Val_true, Val_long(0));
     #endif
 
     params[0] = Val_long(domain_id);
     params[1] = caml_copy_int64(timestamp);
     params[2] = Val_long(phase);
-    params[3] = perf_configs;
-    params[4] = perf_counters;
+    params[3] = perf_data;
 
-    res = caml_callbackN_exn(Some_val(tmp_callback), 5, params);
+    res = caml_callbackN_exn(Some_val(tmp_callback), 4, params);
 
     if( Is_exception_result(res) ) {
       res = Extract_exception(res);
@@ -803,13 +811,11 @@ static int ml_runtime_end(int domain_id, void *callback_data,
                            uint64_t timestamp, ev_runtime_phase phase,
                            uint64_t header, uint64_t *buf, int buf_len) {
   CAMLparam0();
-  CAMLlocal4(tmp_callback, callbacks_root, res, perf_configs);
-  CAMLlocal1(perf_counters);
-  CAMLlocalN(params, 5);
+  CAMLlocal4(tmp_callback, callbacks_root, res, perf_data);
+  CAMLlocalN(params, 4);
 
   /* Initialize local variables to prevent GC issues */
-  perf_configs = Val_unit;
-  perf_counters = Val_unit;
+  perf_data = Val_unit;
 
   struct callbacks_exception_holder* holder = callback_data;
 
@@ -817,7 +823,8 @@ static int ml_runtime_end(int domain_id, void *callback_data,
 
   tmp_callback = Field(callbacks_root, 1); /* ev_runtime_end */
   if (Is_some(tmp_callback)) {
-    /* Initialize perf arrays first, before any allocations that might trigger GC */
+    /* Allocate unboxed perf_sample array: #{ config: int64#; value: int64# }
+       Uses local allocation when available, falls back to heap otherwise */
     #ifdef PERF_COUNTERS
     int nperf = RUNTIME_EVENTS_ITEM_PERF_COUNTERS(header);
 
@@ -827,30 +834,35 @@ static int ml_runtime_end(int domain_id, void *callback_data,
     int perf_start_index = buf_len - (2 * nperf);
 
     if (nperf > 0 && perf_start_index >= 2) {
-      perf_configs = caml_alloc(nperf, 0);
-      perf_counters = caml_alloc(nperf, 0);
-
+      /* Allocate array of unboxed records (2 int64# components per element) */
+      perf_data = caml_makearray_dynamic_non_scannable_unboxed_product(
+          Val_long(2),      /* num_components (config + value) */
+          Val_true,         /* is_local (try local alloc, auto-fallback) */
+          Val_long(nperf)   /* array length */
+      );
+      /* Write int64 values directly to the unboxed array */
+      int64_t* data = (int64_t*)perf_data;
       for (int i = 0; i < nperf; i++) {
-        Store_field(perf_configs, i, caml_copy_int64(buf[perf_start_index + i]));
-        Store_field(perf_counters, i,
-                    caml_copy_int64(buf[perf_start_index + nperf + i]));
+        data[i*2] = buf[perf_start_index + i];           /* config */
+        data[i*2 + 1] = buf[perf_start_index + nperf + i]; /* value */
       }
     } else {
-      perf_configs = caml_alloc(0, 0);
-      perf_counters = caml_alloc(0, 0);
+      /* Empty array - allocate with length 0 */
+      perf_data = caml_makearray_dynamic_non_scannable_unboxed_product(
+          Val_long(2), Val_true, Val_long(0));
     }
     #else
-    perf_configs = caml_alloc(0, 0);
-    perf_counters = caml_alloc(0, 0);
+    /* No perf counters - allocate empty array */
+    perf_data = caml_makearray_dynamic_non_scannable_unboxed_product(
+        Val_long(2), Val_true, Val_long(0));
     #endif
 
     params[0] = Val_long(domain_id);
     params[1] = caml_copy_int64(timestamp);
     params[2] = Val_long(phase);
-    params[3] = perf_configs;
-    params[4] = perf_counters;
+    params[3] = perf_data;
 
-    res = caml_callbackN_exn(Some_val(tmp_callback), 5, params);
+    res = caml_callbackN_exn(Some_val(tmp_callback), 4, params);
 
     if( Is_exception_result(res) ) {
       res = Extract_exception(res);

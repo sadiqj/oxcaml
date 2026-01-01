@@ -47,6 +47,9 @@
 #define PERF_COUNTERS
 #endif
 
+/* Maximum number of perf events - must match runtime/runtime_events.c */
+#define MAX_PERF_EVENTS 20
+
 #if defined(HAS_UNISTD)
 #include <unistd.h>
 #endif
@@ -786,6 +789,7 @@ static int ml_runtime_begin(int domain_id, void *callback_data,
     }
     #else
     /* No perf counters - allocate empty array */
+    (void)header; (void)buf; (void)buf_len;
     perf_data = caml_makearray_dynamic_non_scannable_unboxed_product(
         Val_long(2), Val_true, Val_long(0));
     #endif
@@ -853,6 +857,7 @@ static int ml_runtime_end(int domain_id, void *callback_data,
     }
     #else
     /* No perf counters - allocate empty array */
+    (void)header; (void)buf; (void)buf_len;
     perf_data = caml_makearray_dynamic_non_scannable_unboxed_product(
         Val_long(2), Val_true, Val_long(0));
     #endif

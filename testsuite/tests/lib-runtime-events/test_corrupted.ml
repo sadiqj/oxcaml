@@ -16,8 +16,8 @@
 
 (* CR mslater for nbarnes: this test currently fails on arm64 *)
 
-  let runtime_begin _ _ _ _ _ = ()
-  let runtime_end _ _ _ _ _ = ()
+  let runtime_begin _ _ _ _ = ()
+  let runtime_end _ _ _ _ = ()
   let runtime_counter _ _ _ _ = ()
   let alloc _ _ _ = ()
   let lifecycle _ _ _ _ = ()

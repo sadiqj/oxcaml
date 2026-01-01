@@ -227,7 +227,6 @@ static int perf_events_setup_rdpmc(struct perf_counters* counters)
     struct perf_counter_rdpmc_info* info = &counters->rdpmc_info[i];
     info->offset = pg->offset;
     if (!(pg->cap_user_rdpmc && pg->index > 0)) {
-      printf("bad: %d %d %d\n", pg->cap_user_rdpmc, pg->index, pg->lock);
       return 1;
     }
     info->index = pg->index - 1;
@@ -825,8 +824,6 @@ static void write_to_ring(ev_category category, ev_message_type type,
   int sample_counters = (category == EV_RUNTIME &&
                          (type.runtime == EV_BEGIN || type.runtime == EV_EXIT) &&
                          counters != NULL && counters->ncounters > 0);
-
-  uint64_t base_length = length_with_header_ts;
 
   if (sample_counters) {
     length_with_header_ts += counters->ncounters * 2; /* two words per counter */
